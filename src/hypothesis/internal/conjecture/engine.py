@@ -71,7 +71,7 @@ class ConjectureRunner(object):
         # will in general only be partially populated). Leaves are
         # ConjectureData objects that have been previously seen as the result
         # of following that path.
-        self.tree = [{}]
+        self.tree = [{}, None]
 
         # A node is dead if there is nothing left to explore past that point.
         # Recursively, a node is dead if either it is a leaf or every byte
@@ -582,66 +582,267 @@ class ConjectureRunner(object):
 
         self.shrink()
 
-    def zero_blocks(self):
-        """Try replacing blocks with zero blocks, starting from the right and
-        proceeding leftwards.
+    def is_shrink_point(self, i):
+        """A shrink point is a block that when lexicographically minimized will
+        cause the size of the generated example to shrink (while remaining
+        valid)."""
 
-        Normally we would proceed from left to right, in keeping with
-        our policy of lexicographic minimization - making shrinks to the
-        right seems like it should be "wasted work" which we might undo
-        later.
+        if i >= len(self.last_data.blocks):
+            return False
+        u, v = self.last_data.blocks[i]
+        block = self.last_data.buffer[u:v]
+        buf = self.last_data.buffer
+        i += 1
+        if not any(block):
+            return False
+        zeroed = buf[:u] + hbytes(v - u) + buf[v:]
 
-        The motivation for doing it this way is that this can unlock
-        shrinks that would become impossible otherwise: If we shrink
-        entirely moving rightwards, then this ends up with a lot of the
-        complexity of an example "trapped at the end", leaving a lot of
-        dead space in the middle. An example of where this can happen is
-        with lists or matrices defined by a length parameter, where only
-        one or two of the values actually matter: If we start from the
-        left then what we'll find is we replace all the early values with
-        zero, leave the later values as the ones that matter, and then we
-        can't shrink the length parameter.
+        def draw_bytes(data, n, distribution):
+            result = zeroed[data.index:data.index + n]
+            if len(result) < n:
+                result += hbytes(n - len(result))
+            return self.__rewrite(data, result)
+
+        zeroed_data = ConjectureData(
+            draw_bytes=draw_bytes, max_length=len(zeroed)
+        )
+        self.test_function(zeroed_data)
+
+        # We can just zero the whole block. Nothing left to do here.
+        if zeroed_data.status == Status.INTERESTING:
+            if (
+                sort_key(zeroed_data.buffer) <
+                sort_key(self.last_data.buffer)
+            ):
+                self.last_data = zeroed_data
+            return False
+
+        # If zeroing it produced an invalid example then this is probably
+        # not a good shrink point. We might lose some useful shrinks, but
+        # it's nothing to be too worried about if we do and it doesn't
+        # generally happen in the main case we're interested in.
+        if zeroed_data.status < Status.VALID:
+            return False
+
+        # It didn't reduce the size when we zeroed it, so it's not a
+        # shrink point.
+        return zeroed_data.index < len(buf)
+
+    def minimize_at_shrink_points(self):
+        """This method handles the case where shrinking a block can cause the
+        amount of data that is drawn to decrease. It's primarily concerned with
+        the case where someone has drawn an integer and then drawn that many
+        elements, but it may be useful in other cases too.
+
+        The big problem with this scenario is that we can end up with the
+        interesting elements at the end of the list, which can prevent us from
+        shrinking purely because we can only shrink by reducing the length
+        parameter, which amounts to taking prefixes.
+
+        This attempts to fix that problem by trying a number of rearrangements
+        of the suffix while shrinking when it occurs, that can allow us to
+        reduce the parameter by moving the intersting elements earlier.
 
         """
 
-        self.debug('Zeroing individual blocks')
+        self.debug('Identifying and minimizing shrink points')
 
-        # We first do a binary search on the hope that a lot of blocks are
-        # replacable. If not, we only pay a log(n) cost so it's no big deal.
+        i = 0
+        while i < len(self.last_data.blocks):
+            # Although shrink points are blocks, it may be that we have
+            # multiple shrink points next to eachother. When this happens we
+            # want to merge them into a single interval to shrink all at once
+            # as otherwise this step can get very expensive.
 
-        # We can replace all blocks >= hi with zero. We cannot replace
-        # all blocks >= lo with zero.
-        lo = 0
-        hi = len(self.last_data.blocks)
-        while lo + 1 < hi:
-            mid = (lo + hi) // 2
-            try:
-                u = self.last_data.blocks[mid][0]
-            except IndexError:
-                # This shouldn't really happen, but may in the presence of a
-                # bad test function whose block structure varies based on some
-                # sort of external data. We could possibly detect this better
-                # and signal an error, but it's hard to do so reliably so
-                # instead we just try to be robust in the face of it.
-                break
-            if self.incorporate_new_buffer(
-                self.last_data.buffer[:u] +
-                hbytes(len(self.last_data.buffer) - u),
-            ):
-                hi = mid
-            else:
-                lo = mid
+            if not self.is_shrink_point(i):
+                i += 1
+                continue
+            j = i + 1
+            while self.is_shrink_point(j):
+                j += 1
 
-        for i in hrange(len(self.last_data.blocks) - 1, -1, -1):
-            # The case where this is not true is hard to hit reliably, and only
-            # exists for similar reasons to the above: It guards against
-            # invalid data generation.
-            if i < len(self.last_data.blocks):  # pragma: no branch
-                u, v = self.last_data.blocks[i]
-                self.incorporate_new_buffer(
-                    self.last_data.buffer[:u] + hbytes(v - u) +
+            u = self.last_data.blocks[i][0]
+            v = self.last_data.blocks[j][0]
+
+            buf = self.last_data.buffer
+
+            i = j
+
+            self.debug('Identified shrink point %r at %i' % (
+                buf[u:v], i
+            ))
+
+            prefix = buf[:u]
+
+            # It is now reasonably minimized, but is blocked from going further
+            # by whatever is in the rest of the data. We now try a more
+            # expensive predicate to minimize by.
+
+            def check(value):
+                """Tried value as a replacement for block, rearranging the
+                suffix a number of times to attempt to make it work if needs
+                be."""
+
+                initial_attempt = prefix + value + \
+                    self.last_data.buffer[v:]
+
+                initial_data = None
+                node_index = 0
+                for c in initial_attempt:
+                    try:
+                        node_index = self.tree[node_index][c]
+                    except KeyError:
+                        break
+                    node = self.tree[node_index]
+                    if isinstance(node, ConjectureData):
+                        initial_data = node
+                        break
+
+                if initial_data is None:
+                    initial_data = ConjectureData.for_buffer(initial_attempt)
+                    self.test_function(initial_data)
+
+                if initial_data.status == Status.INTERESTING:
+                    self.last_data = initial_data
+                    return True
+
+                # If this produced something completely invalid we ditch it
+                # here rather than trying to persevere.
+                if initial_data.status < Status.VALID:
+                    return False
+
+                lost_data = len(self.last_data.buffer) - \
+                    len(initial_data.buffer)
+
+                # If this did not in fact cause the data size to shrink we
+                # bail here because it's not worth trying to delete stuff from
+                # the remainder.
+                if not lost_data:
+                    return False
+
+                try_with_deleted = bytearray(self.last_data.buffer)
+                try_with_deleted[u:v] = value
+                del try_with_deleted[v:v + lost_data]
+                if self.incorporate_new_buffer(try_with_deleted):
+                    return True
+                seen_size = set()
+                for r, s in self.last_data.blocks[i:]:
+                    buf = self.last_data.buffer
+                    size = s - r
+                    if (
+                        not any(buf[r:s]) and size <= lost_data
+                        and size not in seen_size
+                    ):
+                        seen_size.add(size)
+                        trial = bytearray(buf)
+                        trial[u:v] = value
+                        del trial[r:s]
+                        if self.incorporate_new_buffer(trial):
+                            return True
+                return False
+            minimize(self.last_data.buffer[u:v], check, random=self.random)
+
+    def greedy_interval_deletion(self):
+        """Attempt to delete every interval in the example."""
+
+        self.debug('Structured interval deletes')
+
+        # We do a delta-debugging style thing here where we initially try to
+        # delete many intervals at once and prune it down exponentially to
+        # eventually only trying to delete one interval at a time.
+
+        # I'm a little skeptical that this is helpful in general, but we've
+        # got at least one benchmark where it does help.
+        k = len(self.last_data.intervals) // 2
+        while k > 0:
+            i = 0
+            while i + k <= len(self.last_data.intervals):
+                bitmask = [True] * len(self.last_data.buffer)
+
+                for u, v in self.last_data.intervals[i:i + k]:
+                    for t in range(u, v):
+                        bitmask[t] = False
+
+                u, v = self.last_data.intervals[i]
+                if not self.incorporate_new_buffer(hbytes(
+                    b for b, v in zip(self.last_data.buffer, bitmask)
+                    if v
+                )):
+                    i += k
+            k //= 2
+
+    def minimize_duplicated_blocks(self):
+        """Find blocks that have been duplicated in multiple places and attempt
+        to minimize all of the duplicates simultaneously."""
+
+        self.debug('Simultaneous shrinking of duplicated blocks')
+        counts = Counter(
+            self.last_data.buffer[u:v] for u, v in self.last_data.blocks
+        )
+        blocks = [
+            k for k, count in
+            counts.items()
+            if count > 1
+        ]
+        blocks.sort(reverse=True)
+        blocks.sort(key=lambda b: counts[b] * len(b), reverse=True)
+        for block in blocks:
+            parts = [
+                self.last_data.buffer[r:s]
+                for r, s in self.last_data.blocks
+            ]
+
+            def replace(b):
+                return hbytes(EMPTY_BYTES.join(
+                    hbytes(b if c == block else c) for c in parts
+                ))
+            minimize(
+                block,
+                lambda b: self.incorporate_new_buffer(replace(b)),
+                random=self.random,
+            )
+
+    def minimize_individual_blocks(self):
+        self.debug('Shrinking of individual blocks')
+        i = 0
+        while i < len(self.last_data.blocks):
+            u, v = self.last_data.blocks[i]
+            minimize(
+                self.last_data.buffer[u:v],
+                lambda b: self.incorporate_new_buffer(
+                    self.last_data.buffer[:u] + b +
                     self.last_data.buffer[v:],
-                )
+                ),
+                random=self.random,
+            )
+            i += 1
+
+    def reorder_blocks(self):
+        self.debug('Reordering blocks')
+        block_lengths = sorted(self.last_data.block_starts, reverse=True)
+        for n in block_lengths:
+            i = 1
+            while i < len(self.last_data.block_starts.get(n, ())):
+                j = i
+                while j > 0:
+                    buf = self.last_data.buffer
+                    blocks = self.last_data.block_starts[n]
+                    a_start = blocks[j - 1]
+                    b_start = blocks[j]
+                    a = buf[a_start:a_start + n]
+                    b = buf[b_start:b_start + n]
+                    if a <= b:
+                        break
+                    swapped = (
+                        buf[:a_start] + b + buf[a_start + n:b_start] +
+                        a + buf[b_start + n:])
+                    assert len(swapped) == len(buf)
+                    assert swapped < buf
+                    if self.incorporate_new_buffer(swapped):
+                        j -= 1
+                    else:
+                        break
+                i += 1
 
     def shrink(self):
         # We assume that if an all-zero block of bytes is an interesting
@@ -664,156 +865,13 @@ class ConjectureRunner(object):
         while self.changed > change_counter:
             change_counter = self.changed
 
-            self.debug('Structured interval deletes')
+            self.minimize_at_shrink_points()
+            self.greedy_interval_deletion()
 
-            k = len(self.last_data.intervals) // 2
-            while k > 0:
-                i = 0
-                while i + k <= len(self.last_data.intervals):
-                    bitmask = [True] * len(self.last_data.buffer)
+            self.minimize_duplicated_blocks()
+            self.minimize_individual_blocks()
 
-                    for u, v in self.last_data.intervals[i:i + k]:
-                        for t in range(u, v):
-                            bitmask[t] = False
-
-                    u, v = self.last_data.intervals[i]
-                    if not self.incorporate_new_buffer(hbytes(
-                        b for b, v in zip(self.last_data.buffer, bitmask)
-                        if v
-                    )):
-                        i += k
-                k //= 2
-
-            self.zero_blocks()
-
-            minimize(
-                self.last_data.buffer, self.incorporate_new_buffer,
-                cautious=True, random=self.random,
-            )
-
-            if change_counter != self.changed:
-                self.debug('Restarting')
-                continue
-
-            self.debug('Bulk replacing blocks with simpler blocks')
-            i = 0
-            while i < len(self.last_data.blocks):
-                u, v = self.last_data.blocks[i]
-                buf = self.last_data.buffer
-                block = buf[u:v]
-                n = v - u
-
-                buffer = bytearray()
-                for r, s in self.last_data.blocks:
-                    if s - r == n and self.last_data.buffer[r:s] > block:
-                        buffer.extend(block)
-                    else:
-                        buffer.extend(self.last_data.buffer[r:s])
-                self.incorporate_new_buffer(hbytes(buffer))
-                i += 1
-
-            self.debug('Simultaneous shrinking of duplicated blocks')
-            block_counter = -1
-            while block_counter < self.changed:
-                block_counter = self.changed
-                blocks = [
-                    k for k, count in
-                    Counter(
-                        self.last_data.buffer[u:v]
-                        for u, v in self.last_data.blocks).items()
-                    if count > 1
-                ]
-                for block in blocks:
-                    parts = [
-                        self.last_data.buffer[r:s]
-                        for r, s in self.last_data.blocks
-                    ]
-
-                    def replace(b):
-                        return hbytes(EMPTY_BYTES.join(
-                            hbytes(b if c == block else c) for c in parts
-                        ))
-                    minimize(
-                        block,
-                        lambda b: self.incorporate_new_buffer(replace(b)),
-                        random=self.random,
-                    )
-
-            if change_counter != self.changed:
-                self.debug('Restarting')
-                continue
-
-            self.debug('Shrinking of individual blocks')
-            i = 0
-            while i < len(self.last_data.blocks):
-                u, v = self.last_data.blocks[i]
-                minimize(
-                    self.last_data.buffer[u:v],
-                    lambda b: self.incorporate_new_buffer(
-                        self.last_data.buffer[:u] + b +
-                        self.last_data.buffer[v:],
-                    ),
-                    random=self.random,
-                )
-                i += 1
-
-            if change_counter != self.changed:
-                self.debug('Restarting')
-                continue
-
-            self.debug('Reordering blocks')
-            block_lengths = sorted(self.last_data.block_starts, reverse=True)
-            for n in block_lengths:
-                i = 1
-                while i < len(self.last_data.block_starts.get(n, ())):
-                    j = i
-                    while j > 0:
-                        buf = self.last_data.buffer
-                        blocks = self.last_data.block_starts[n]
-                        a_start = blocks[j - 1]
-                        b_start = blocks[j]
-                        a = buf[a_start:a_start + n]
-                        b = buf[b_start:b_start + n]
-                        if a <= b:
-                            break
-                        swapped = (
-                            buf[:a_start] + b + buf[a_start + n:b_start] +
-                            a + buf[b_start + n:])
-                        assert len(swapped) == len(buf)
-                        assert swapped < buf
-                        if self.incorporate_new_buffer(swapped):
-                            j -= 1
-                        else:
-                            break
-                    i += 1
-
-            self.debug('Shuffling suffixes while shrinking %r' % (
-                self.last_data.bind_points,
-            ))
-            b = 0
-            while b < len(self.last_data.bind_points):
-                cutoff = sorted(self.last_data.bind_points)[b]
-
-                def test_value(prefix):
-                    for t in hrange(5):
-                        alphabet = {}
-                        for i, j in self.last_data.blocks[b:]:
-                            alphabet.setdefault(j - i, []).append((i, j))
-                        if t > 0:
-                            for v in alphabet.values():
-                                self.random.shuffle(v)
-                        buf = bytearray(prefix)
-                        for i, j in self.last_data.blocks[b:]:
-                            u, v = alphabet[j - i].pop()
-                            buf.extend(self.last_data.buffer[u:v])
-                        if self.incorporate_new_buffer(hbytes(buf)):
-                            return True
-                    return False
-                minimize(
-                    self.last_data.buffer[:cutoff], test_value, cautious=True,
-                    random=self.random,
-                )
-                b += 1
+            self.reorder_blocks()
 
         self.exit_reason = ExitReason.finished
 

@@ -41,12 +41,12 @@ to do better in practice:
 
 class Minimizer(object):
 
-    def __init__(self, initial, condition, random, cautious):
+    def __init__(self, initial, condition, random):
         self.current = hbytes(initial)
+
         self.size = len(self.current)
         self.condition = condition
         self.random = random
-        self.cautious = cautious
         self.changes = 0
         self.seen = set()
 
@@ -63,9 +63,6 @@ class Minimizer(object):
         if buffer in self.seen:
             return False
         self.seen.add(buffer)
-        if self.cautious:
-            for c, b in zip(buffer, self.current):
-                assert c <= b, (buffer, self.current)
         if buffer != self.current and self.condition(buffer):
             self.current = buffer
             self.changes += 1
@@ -86,6 +83,9 @@ class Minimizer(object):
                     if self.incorporate(hbytes(block)):
                         break
 
+    def replace(self, i, c):
+        return self.current[:i] + hbytes([c]) + self.current[i + 1:]
+
     def rotate_suffixes(self):
         for significant, c in enumerate(self.current):  # pragma: no branch
             if c:
@@ -101,72 +101,164 @@ class Minimizer(object):
             if rotated < self.current:
                 self.incorporate(rotated)
 
-    def shrink_indices(self, timid):
-        assert timid or not self.cautious
-
+    def shrink_indices(self):
         # We take a bet that there is some monotonic lower bound such that
         # whenever current >= lower_bound the result works.
-        for i in hrange(self.size):
-            if self.current[i] == 0:
-                continue
-
-            if self.incorporate(
-                self.current[:i] + hbytes([0]) + self.current[i + 1:]
-            ):
+        i = 0
+        while i < self.size:
+            if self.current[i] == 0 or self.incorporate(self.replace(i, 0)):
+                i += 1
                 continue
 
             prefix = self.current[:i]
-            original_suffix = self.current[i + 1:]
 
-            suffixes = [original_suffix]
+            def suitable(c):
+                """Does the lexicographically largest value starting with our
+                prefix and having c at i satisfy the condition?"""
+                if c == self.current[i]:
+                    return True
 
-            if not timid:
-                suffixes.append(hbytes([255] * (self.size - i - 1)))
+                remainder = self.size - i - 1
 
-            for suffix in suffixes:
+                k = 0
+                stopped = False
+                while not stopped:
+                    n = 2 ** k - 1
+                    if n >= remainder:
+                        stopped = True
+                        n = remainder
+                    k += 1
+                    suffix = hbytes([255]) * n + self.current[i + n + 1:]
+                    if self.incorporate(prefix + hbytes([c]) + suffix):
+                        return True
+                return False
 
-                def suitable(c):
-                    """Does the lexicographically largest value starting with
-                    our prefix and having c at i satisfy the condition?"""
+            minimize_byte(self.current[i], suitable)
+            i += 1
 
-                    return self.incorporate(prefix + hbytes([c]) + suffix)
+    def find_all_repeated_ngrams(self):
+        index = {}
+        for i, c in enumerate(self.current):
+            index.setdefault(c, []).append(i)
 
-                c = self.current[i]
+        indices = [vs for vs in index.values() if len(vs) >= 2]
+        length = 1
+        results = set()
+        seen_canon = set()
+        while indices:
+            new_indices = []
+            for ix in indices:
+                local_index = {}
+                hit_limit = False
+                for i in ix:
+                    if i + length < self.size:
+                        local_index.setdefault(
+                            self.current[i + length], []).append(i)
+                    else:
+                        hit_limit = True
+                for vs in local_index.values():
+                    assert vs
+                    if len(vs) < 2:
+                        hit_limit = True
+                    else:
+                        new_indices.append(vs)
+                if hit_limit and length > 1:
+                    i = vs[0]
 
-                if (
-                    # We first see if replacing the byte with zero and the rest
-                    # is enough to trigger the condition. If this succeeds
-                    # we've successfully zeroed the byte here and the rest of
-                    # this search isn't useful. Note that we've already checked
-                    # this for the existing suffix, but the caching makes that
-                    # harmlesss.
-                    not suitable(0) and
+                    canonicalize = [i]
+                    for j in ix:
+                        if j >= canonicalize[-1] + length:
+                            canonicalize.append(j)
+                    if len(canonicalize) > 1:
+                        token = self.current[i:i + length]
+                        for i, c in enumerate(token):
+                            if c:
+                                offset = i
+                                break
+                        else:
+                            continue
+                        canonicalize = tuple(i + offset for i in canonicalize)
+                        if canonicalize not in seen_canon:
+                            results.add(token)
+                            seen_canon.add(canonicalize)
+            length += 1
+            indices = new_indices
+        return sorted(results, key=lambda s: (len(s), s), reverse=True)
 
-                    # We now check if the lexicographic predecessor (where this
-                    # element is reduced by 1 and all subsequent elements are
-                    # raised to 255) is valid here. If it's not then there's
-                    # no point in trying the search and we can break out early.
-                    suitable(c - 1)
-                ):
-                    # We now do a binary search to find a small value
-                    # where the large suffix works. Again, the property is not
-                    # necessarily monotonic, so this doesn't actually guarantee
-                    # the smallest value.
-                    @binsearch(0, self.current[i])
-                    def _(m):
-                        # We have to manually check the end point because we
-                        # already incorporated this.
-                        if m == self.current[i]:
-                            return True
-                        return suitable(m)
+    def minimize_repeated_tokens(self):
+        i = 0
+        local_changes = -1
+        tokens = [None]
+
+        while True:
+            if self.changes != local_changes:
+                tokens = self.find_all_repeated_ngrams()
+                local_changes = self.changes
+            if i >= len(tokens):
+                break
+            t = tokens[i]
+            parts = self.current.split(t)
+            assert len(parts) >= 2
+
+            def token_condition(s):
+                res = s.join(parts)
+                if res == self.current:
+                    return True
+                else:
+                    return self.incorporate(res)
+
+            if len(t) == 2 or len(set(t)) > 1:
+                minimize(
+                    t,
+                    token_condition, random=self.random,
+                )
+            i += 1
+
+    def check_predecessor(self):
+        predecessor = bytearray(self.current)
+        for i in hrange(len(predecessor) - 1, -1, -1):
+            if predecessor[i] == 0:
+                predecessor[i] = 255
+            else:
+                predecessor[i] -= 1
+                break
+        else:
+            assert False
+
+        return self.incorporate(hbytes(predecessor))
+
+    def alphabet_minimize(self):
+        def cap(m):
+            if m >= max(self.current):
+                return True
+            return self.incorporate(hbytes([min(m, c) for c in self.current]))
+
+        minimize_byte(max(self.current), cap)
+
+        for c in sorted(set(self.current), reverse=True):
+            initial = self.current
+
+            def replace(b):
+                r = hbytes([b if d == c else d for d in initial])
+                if r == self.current:
+                    return True
+                return self.incorporate(r)
+            minimize_byte(c, replace)
+
+    def sort_bytes(self):
+        for i in hrange(self.size):
+            j = i
+            for j in hrange(i, 0, -1):
+                if self.current[j - 1] <= self.current[j]:
+                    break
+                replacement = bytearray(self.current)
+                replacement[j], replacement[j - 1] = replacement[j - 1], \
+                    replacement[j]
+                if not self.incorporate(hbytes(replacement)):
+                    break
 
     def run(self):
         if not any(self.current):
-            return
-        if len(self.current) == 1:
-            for c in hrange(self.current[0]):
-                if self.incorporate(hbytes([c])):
-                    break
             return
 
         # Initial checks as to whether the two smallest possible buffers of
@@ -174,9 +266,13 @@ class Minimizer(object):
         if self.incorporate(hbytes(self.size)):
             return
 
-        if not self.cautious or self.current[-1] > 0:
-            if self.incorporate(hbytes([0] * (self.size - 1) + [1])):
-                return
+        if self.incorporate(hbytes([0] * (self.size - 1) + [1])):
+            return
+
+        self.alphabet_minimize()
+
+        if len(self.current) == 1:
+            return
 
         # Perform a binary search to try to replace a long initial segment with
         # zero bytes.
@@ -203,40 +299,27 @@ class Minimizer(object):
 
         base = self.current
 
-        if not self.cautious:
-            @binsearch(0, self.size)
-            def shift_right(mid):
-                if mid == 0:
-                    return True
-                if mid == self.size:
-                    return False
-                return self.incorporate(hbytes(mid) + base[:-mid])
+        @binsearch(0, self.size)
+        def shift_right(mid):
+            if mid == 0:
+                return True
+            if mid == self.size:
+                return False
+            return self.incorporate(hbytes(mid) + base[:-mid])
 
-        change_counter = -1
-        while self.current and change_counter < self.changes:
-            change_counter = self.changes
+        self.minimize_repeated_tokens()
 
-            self.shift()
-            self.shrink_indices(timid=True)
+        self.sort_bytes()
 
-            if not self.cautious:
-                self.shrink_indices(timid=False)
-                self.rotate_suffixes()
+        if self.check_predecessor():
+            self.shrink_indices()
 
 
-def minimize(initial, condition, random, cautious=False):
+def minimize(initial, condition, random):
     """Perform a lexicographical minimization of the byte string 'initial' such
     that the predicate 'condition' returns True, and return the minimized
-    string.
-
-    If 'cautious' is set to True, this will only consider strings that
-    satisfy the stronger condition that no individual byte is increased
-    from the original. e.g. normally bytes([0, 255]) is considered a
-    valid shrink of bytes([1, 0]), but if cautious is set it will not
-    be.
-
-    """
-    m = Minimizer(initial, condition, random, cautious)
+    string."""
+    m = Minimizer(initial, condition, random)
     m.run()
     return m.current
 
@@ -268,3 +351,24 @@ def binsearch(_lo, _hi):
                 assert hival == midval
                 hi = mid
     return accept
+
+
+def minimize_byte(c, f):
+    if c == 0 or f(0):
+        return 0
+    elif c == 1 or f(1):
+        return 1
+    elif c == 2:
+        return 2
+    if not f(c - 1):
+        return c
+
+    lo = 1
+    hi = c - 1
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if f(mid):
+            hi = mid
+        else:
+            lo = mid
+    return hi
