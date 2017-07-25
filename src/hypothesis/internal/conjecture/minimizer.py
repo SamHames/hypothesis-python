@@ -111,6 +111,8 @@ class Minimizer(object):
                 continue
 
             prefix = self.current[:i]
+            original_suffix = self.current[i+1:]
+            shrinking_suffix = hbytes([255]) * len(original_suffix)
 
             def suitable(c):
                 """Does the lexicographically largest value starting with our
@@ -118,22 +120,27 @@ class Minimizer(object):
                 if c == self.current[i]:
                     return True
 
-                remainder = self.size - i - 1
+                return self.incorporate(
+                    prefix + hbytes([c]) + shrinking_suffix
+                )
 
-                k = 0
-                stopped = False
-                while not stopped:
-                    n = 2 ** k - 1
-                    if n >= remainder:
-                        stopped = True
-                        n = remainder
-                    k += 1
-                    suffix = hbytes([255]) * n + self.current[i + n + 1:]
-                    if self.incorporate(prefix + hbytes([c]) + suffix):
-                        return True
-                return False
-
+            original = self.current[i]
             minimize_byte(self.current[i], suitable)
+            if self.current[i] != original:
+                full_prefix = self.current[:i + 1]
+
+                if not self.incorporate(full_prefix + original_suffix):
+                    full = self.size - i - 1
+
+                    @binsearch(0, full)
+                    def search(mid):
+                        if mid == 0:
+                            return False
+                        if mid == full:
+                            return True
+                        attempt = full_prefix + \
+                            hbytes([255]) * mid + original_suffix[mid:]
+                        return self.incorporate(attempt)
             i += 1
 
     def find_all_repeated_ngrams(self):
@@ -246,6 +253,24 @@ class Minimizer(object):
             minimize_byte(c, replace)
 
     def sort_bytes(self):
+        """The sorted version of a sequence is always lexicographically at most
+        the original sequence, and having low bytes earlier also helps with our
+        index based shrinking, so we try to sort it as much as possible."""
+
+        # We first check if a full sort of the sequence is possible. If so we
+        # just do that and bail out early.
+        fully_sorted = hbytes(sorted(self.current))
+        if fully_sorted == self.current or self.incorporate(fully_sorted):
+            return
+
+        # We now know we can't properly sort it, but we can still perform a
+        # local sort pass. This is basically an insertion sort pass where as
+        # well as sorting we also check that the rearranged version satisfies
+        # our target condition. If it doesn't then we block the insertion sort.
+        # This is potentially a quadratic pass, but our block sizes are
+        # typically pretty small and given that we failed to fully sort this
+        # we can anticipate the condition itself terminating some of the
+        # movement.
         for i in hrange(self.size):
             j = i
             for j in hrange(i, 0, -1):
