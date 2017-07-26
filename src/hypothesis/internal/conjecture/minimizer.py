@@ -112,7 +112,18 @@ class Minimizer(object):
 
             prefix = self.current[:i]
             original_suffix = self.current[i+1:]
-            shrinking_suffix = hbytes([255]) * len(original_suffix)
+
+            for suffix in [
+                original_suffix, hbytes([255]) * len(original_suffix)
+            ]:
+                if self.incorporate(
+                    prefix + hbytes([self.current[i] - 1]) + suffix
+                ):
+                    shrinking_suffix = suffix
+                    break
+            else:
+                i += 1
+                continue
 
             def suitable(c):
                 """Does the lexicographically largest value starting with our
@@ -129,7 +140,10 @@ class Minimizer(object):
             if self.current[i] != original:
                 full_prefix = self.current[:i + 1]
 
-                if not self.incorporate(full_prefix + original_suffix):
+                if (
+                    shrinking_suffix != original_suffix and
+                    not self.incorporate(full_prefix + original_suffix)
+                ):
                     full = self.size - i - 1
 
                     @binsearch(0, full)
@@ -332,12 +346,12 @@ class Minimizer(object):
                 return False
             return self.incorporate(hbytes(mid) + base[:-mid])
 
-        self.minimize_repeated_tokens()
-
         self.sort_bytes()
 
         if self.check_predecessor():
             self.shrink_indices()
+
+        self.minimize_repeated_tokens()
 
 
 def minimize(initial, condition, random):
@@ -379,7 +393,11 @@ def binsearch(_lo, _hi):
 
 
 def minimize_byte(c, f):
-    if c == 0 or f(0):
+    if c == 0:
+        return 0
+    if not f(c - 1):
+        return c
+    if f(0):
         return 0
     elif c == 1 or f(1):
         return 1
