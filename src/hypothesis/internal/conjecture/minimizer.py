@@ -113,9 +113,18 @@ class Minimizer(object):
             prefix = self.current[:i]
             original_suffix = self.current[i+1:]
 
-            for suffix in [
-                original_suffix, hbytes([255]) * len(original_suffix)
-            ]:
+            suffixes = [original_suffix]
+
+            k = 1
+            should_continue = True
+            while should_continue:
+                if k >= len(original_suffix):
+                    k = len(original_suffix)
+                    should_continue = False
+                suffixes.append(hbytes([255]) * k + original_suffix[k:])
+                k *= 2
+
+            for suffix in suffixes:
                 if self.incorporate(
                     prefix + hbytes([self.current[i] - 1]) + suffix
                 ):
@@ -153,7 +162,9 @@ class Minimizer(object):
                         if mid == full:
                             return True
                         attempt = full_prefix + \
-                            hbytes([255]) * mid + original_suffix[mid:]
+                            shrinking_suffix[:mid] + original_suffix[mid:]
+                        if attempt == self.current:
+                            return True
                         return self.incorporate(attempt)
             i += 1
 
@@ -395,23 +406,23 @@ def binsearch(_lo, _hi):
 def minimize_byte(c, f):
     if c == 0:
         return 0
-    if not f(c - 1):
-        return c
     if f(0):
         return 0
-    elif c == 1 or f(1):
+    if c == 1 or f(1):
         return 1
     elif c == 2:
         return 2
-    if not f(c - 1):
-        return c
-
     lo = 1
-    hi = c - 1
-    while lo + 1 < hi:
-        mid = (lo + hi) // 2
+    while lo + 1 < c:
+        mid = (lo + c) // 2
         if f(mid):
-            hi = mid
+            c = mid
         else:
             lo = mid
-    return hi
+    for i in hrange(7, -1, -1):
+        p = 1 << i
+        if c & p:
+            d = c & (~p)
+            if f(d):
+                c = d
+    return c

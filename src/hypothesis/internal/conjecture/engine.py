@@ -686,61 +686,58 @@ class ConjectureRunner(object):
                 initial_attempt = prefix + value + \
                     self.last_data.buffer[v:]
 
-                initial_data = None
-                node_index = 0
-                for c in initial_attempt:
-                    try:
-                        node_index = self.tree[node_index][c]
-                    except KeyError:
-                        break
-                    node = self.tree[node_index]
-                    if isinstance(node, ConjectureData):
-                        initial_data = node
-                        break
+                return self.try_buffer_with_rewriting_from(
+                    initial_attempt, v
+                )
+            minimize(self.last_data.buffer[u:v], check, random=self.random)
 
-                if initial_data is None:
-                    initial_data = ConjectureData.for_buffer(initial_attempt)
-                    self.test_function(initial_data)
+    def try_buffer_with_rewriting_from(self, initial_attempt, v):
+        initial_data = None
+        node_index = 0
+        for c in initial_attempt:
+            try:
+                node_index = self.tree[node_index][c]
+            except KeyError:
+                break
+            node = self.tree[node_index]
+            if isinstance(node, ConjectureData):
+                initial_data = node
+                break
 
-                if initial_data.status == Status.INTERESTING:
-                    self.last_data = initial_data
-                    return True
+        if initial_data is None:
+            initial_data = ConjectureData.for_buffer(initial_attempt)
+            self.test_function(initial_data)
 
-                # If this produced something completely invalid we ditch it
-                # here rather than trying to persevere.
-                if initial_data.status < Status.VALID:
-                    return False
+        if initial_data.status == Status.INTERESTING:
+            self.last_data = initial_data
+            return True
 
-                lost_data = len(self.last_data.buffer) - \
-                    len(initial_data.buffer)
+        # If this produced something completely invalid we ditch it
+        # here rather than trying to persevere.
+        if initial_data.status < Status.VALID:
+            return False
 
-                # If this did not in fact cause the data size to shrink we
-                # bail here because it's not worth trying to delete stuff from
-                # the remainder.
-                if not lost_data:
-                    return False
+        lost_data = len(self.last_data.buffer) - \
+            len(initial_data.buffer)
 
-                try_with_deleted = bytearray(self.last_data.buffer)
-                try_with_deleted[u:v] = value
-                del try_with_deleted[v:v + lost_data]
+        # If this did not in fact cause the data size to shrink we
+        # bail here because it's not worth trying to delete stuff from
+        # the remainder.
+        if not lost_data:
+            return False
+
+        try_with_deleted = bytearray(initial_attempt)
+        del try_with_deleted[v:v + lost_data]
+        if self.incorporate_new_buffer(try_with_deleted):
+            return True
+
+        for r, s in self.last_data.intervals:
+            if r >= v and s - r <= lost_data:
+                try_with_deleted = bytearray(initial_attempt)
+                del try_with_deleted[r:s]
                 if self.incorporate_new_buffer(try_with_deleted):
                     return True
-                seen_size = set()
-                for r, s in self.last_data.blocks[i:]:
-                    buf = self.last_data.buffer
-                    size = s - r
-                    if (
-                        not any(buf[r:s]) and size <= lost_data
-                        and size not in seen_size
-                    ):
-                        seen_size.add(size)
-                        trial = bytearray(buf)
-                        trial[u:v] = value
-                        del trial[r:s]
-                        if self.incorporate_new_buffer(trial):
-                            return True
-                return False
-            minimize(self.last_data.buffer[u:v], check, random=self.random)
+        return False
 
     def greedy_interval_deletion(self):
         """Attempt to delete every interval in the example."""
@@ -784,6 +781,12 @@ class ConjectureRunner(object):
             counts.items()
             if count > 1
         ]
+
+        thresholds = {}
+        for u, v in self.last_data.blocks:
+            b = self.last_data.buffer[u:v]
+            thresholds[b] = v
+
         blocks.sort(reverse=True)
         blocks.sort(key=lambda b: counts[b] * len(b), reverse=True)
         for block in blocks:
@@ -796,9 +799,13 @@ class ConjectureRunner(object):
                 return hbytes(EMPTY_BYTES.join(
                     hbytes(b if c == block else c) for c in parts
                 ))
+
+            threshold = thresholds[block]
+
             minimize(
                 block,
-                lambda b: self.incorporate_new_buffer(replace(b)),
+                lambda b: self.try_buffer_with_rewriting_from(
+                    replace(b), threshold),
                 random=self.random,
             )
 
@@ -867,9 +874,9 @@ class ConjectureRunner(object):
 
             self.minimize_at_shrink_points()
             self.greedy_interval_deletion()
-
             self.minimize_duplicated_blocks()
             self.minimize_individual_blocks()
+            self.reorder_blocks()
 
             self.reorder_blocks()
 
