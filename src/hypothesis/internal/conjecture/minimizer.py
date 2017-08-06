@@ -413,17 +413,21 @@ def minimize_byte(c, f):
         return 1
     elif c == 2:
         return 2
-    lo = 1
-    while lo + 1 < c:
-        mid = (lo + c) // 2
-        if f(mid):
-            c = mid
-        else:
-            lo = mid
-    for i in hrange(7, -1, -1):
-        p = 1 << i
-        if c & p:
-            d = c & (~p)
-            if f(d):
-                c = d
-    return c
+    if f(c - 1):
+        lo = 1
+        hi = c - 1
+        while lo + 1 < hi:
+            mid = (lo + hi) // 2
+            if f(mid):
+                hi = mid
+            else:
+                lo = mid
+        return hi
+    else:
+        for i in hrange(7, -1, -1):
+            p = 1 << i
+            if c & p:
+                d = c & (~p)
+                if f(d):
+                    c = d
+        return c
