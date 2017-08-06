@@ -582,115 +582,6 @@ class ConjectureRunner(object):
 
         self.shrink()
 
-    def is_shrink_point(self, i):
-        """A shrink point is a block that when lexicographically minimized will
-        cause the size of the generated example to shrink (while remaining
-        valid)."""
-
-        if i >= len(self.last_data.blocks):
-            return False
-        u, v = self.last_data.blocks[i]
-        block = self.last_data.buffer[u:v]
-        buf = self.last_data.buffer
-        i += 1
-        if not any(block):
-            return False
-        zeroed = buf[:u] + hbytes(v - u) + buf[v:]
-
-        def draw_bytes(data, n, distribution):
-            result = zeroed[data.index:data.index + n]
-            if len(result) < n:
-                result += hbytes(n - len(result))
-            return self.__rewrite(data, result)
-
-        zeroed_data = ConjectureData(
-            draw_bytes=draw_bytes, max_length=len(zeroed)
-        )
-        self.test_function(zeroed_data)
-
-        # We can just zero the whole block. Nothing left to do here.
-        if zeroed_data.status == Status.INTERESTING:
-            if (
-                sort_key(zeroed_data.buffer) <
-                sort_key(self.last_data.buffer)
-            ):
-                self.last_data = zeroed_data
-            return False
-
-        # If zeroing it produced an invalid example then this is probably
-        # not a good shrink point. We might lose some useful shrinks, but
-        # it's nothing to be too worried about if we do and it doesn't
-        # generally happen in the main case we're interested in.
-        if zeroed_data.status < Status.VALID:
-            return False
-
-        # It didn't reduce the size when we zeroed it, so it's not a
-        # shrink point.
-        return zeroed_data.index < len(buf)
-
-    def minimize_at_shrink_points(self):
-        """This method handles the case where shrinking a block can cause the
-        amount of data that is drawn to decrease. It's primarily concerned with
-        the case where someone has drawn an integer and then drawn that many
-        elements, but it may be useful in other cases too.
-
-        The big problem with this scenario is that we can end up with the
-        interesting elements at the end of the list, which can prevent us from
-        shrinking purely because we can only shrink by reducing the length
-        parameter, which amounts to taking prefixes.
-
-        This attempts to fix that problem by trying a number of rearrangements
-        of the suffix while shrinking when it occurs, that can allow us to
-        reduce the parameter by moving the intersting elements earlier.
-
-        """
-
-        self.debug('Identifying and minimizing shrink points')
-
-        i = 0
-        while i < len(self.last_data.blocks):
-            # Although shrink points are blocks, it may be that we have
-            # multiple shrink points next to eachother. When this happens we
-            # want to merge them into a single interval to shrink all at once
-            # as otherwise this step can get very expensive.
-
-            if not self.is_shrink_point(i):
-                i += 1
-                continue
-            j = i + 1
-            while self.is_shrink_point(j):
-                j += 1
-
-            u = self.last_data.blocks[i][0]
-            v = self.last_data.blocks[j][0]
-
-            buf = self.last_data.buffer
-
-            i = j
-
-            self.debug('Identified shrink point %r at %i' % (
-                buf[u:v], i
-            ))
-
-            prefix = buf[:u]
-
-            # It is now reasonably minimized, but is blocked from going further
-            # by whatever is in the rest of the data. We now try a more
-            # expensive predicate to minimize by.
-
-            def check(value):
-                """Tried value as a replacement for block, rearranging the
-                suffix a number of times to attempt to make it work if needs
-                be."""
-
-                initial_attempt = prefix + value + \
-                    self.last_data.buffer[v:]
-
-                return self.try_buffer_with_rewriting_from(
-                    initial_attempt, v
-                )
-            minimize(self.last_data.buffer[u:v], check, random=self.random)
-
     def try_buffer_with_rewriting_from(self, initial_attempt, v):
         initial_data = None
         node_index = 0
@@ -820,9 +711,9 @@ class ConjectureRunner(object):
             u, v = self.last_data.blocks[i]
             minimize(
                 self.last_data.buffer[u:v],
-                lambda b: self.incorporate_new_buffer(
+                lambda b: self.try_buffer_with_rewriting_from(
                     self.last_data.buffer[:u] + b +
-                    self.last_data.buffer[v:],
+                    self.last_data.buffer[v:], v
                 ),
                 random=self.random,
             )
@@ -876,10 +767,9 @@ class ConjectureRunner(object):
         while self.changed > change_counter:
             change_counter = self.changed
 
-            self.minimize_at_shrink_points()
-            self.greedy_interval_deletion()
             self.minimize_duplicated_blocks()
             self.minimize_individual_blocks()
+            self.greedy_interval_deletion()
             self.reorder_blocks()
 
             self.reorder_blocks()

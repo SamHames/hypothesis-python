@@ -169,84 +169,6 @@ class Minimizer(object):
                         return self.incorporate(attempt)
             i += 1
 
-    def find_all_repeated_ngrams(self):
-        index = {}
-        for i, c in enumerate(self.current):
-            index.setdefault(c, []).append(i)
-
-        indices = [vs for vs in index.values() if len(vs) >= 2]
-        length = 1
-        results = set()
-        seen_canon = set()
-        while indices:
-            new_indices = []
-            for ix in indices:
-                local_index = {}
-                hit_limit = False
-                for i in ix:
-                    if i + length < self.size:
-                        local_index.setdefault(
-                            self.current[i + length], []).append(i)
-                    else:
-                        hit_limit = True
-                for vs in local_index.values():
-                    assert vs
-                    if len(vs) < 2:
-                        hit_limit = True
-                    else:
-                        new_indices.append(vs)
-                if hit_limit and length > 1:
-                    i = vs[0]
-
-                    canonicalize = [i]
-                    for j in ix:
-                        if j >= canonicalize[-1] + length:
-                            canonicalize.append(j)
-                    if len(canonicalize) > 1:
-                        token = self.current[i:i + length]
-                        for i, c in enumerate(token):
-                            if c:
-                                offset = i
-                                break
-                        else:
-                            continue
-                        canonicalize = tuple(i + offset for i in canonicalize)
-                        if canonicalize not in seen_canon:
-                            results.add(token)
-                            seen_canon.add(canonicalize)
-            length += 1
-            indices = new_indices
-        return sorted(results, key=lambda s: (len(s), s), reverse=True)
-
-    def minimize_repeated_tokens(self):
-        i = 0
-        local_changes = -1
-        tokens = [None]
-
-        while True:
-            if self.changes != local_changes:
-                tokens = self.find_all_repeated_ngrams()
-                local_changes = self.changes
-            if i >= len(tokens):
-                break
-            t = tokens[i]
-            parts = self.current.split(t)
-            assert len(parts) >= 2
-
-            def token_condition(s):
-                res = s.join(parts)
-                if res == self.current:
-                    return True
-                else:
-                    return self.incorporate(res)
-
-            if len(t) == 2 or len(set(t)) > 1:
-                minimize(
-                    t,
-                    token_condition, random=self.random,
-                )
-            i += 1
-
     def check_predecessor(self):
         predecessor = bytearray(self.current)
         for i in hrange(len(predecessor) - 1, -1, -1):
@@ -362,8 +284,6 @@ class Minimizer(object):
 
         if self.check_predecessor():
             self.shrink_indices()
-
-        self.minimize_repeated_tokens()
 
 
 def minimize(initial, condition, random):
