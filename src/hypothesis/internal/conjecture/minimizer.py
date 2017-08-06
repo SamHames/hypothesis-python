@@ -118,10 +118,11 @@ class Minimizer(object):
             k = 1
             should_continue = True
             while should_continue:
-                if k >= len(original_suffix):
-                    k = len(original_suffix)
+                h = k - 1
+                if h >= len(original_suffix):
+                    h = len(original_suffix)
                     should_continue = False
-                suffixes.append(hbytes([255]) * k + original_suffix[k:])
+                suffixes.append(hbytes([255]) * h + original_suffix[h:])
                 k *= 2
 
             for suffix in suffixes:
