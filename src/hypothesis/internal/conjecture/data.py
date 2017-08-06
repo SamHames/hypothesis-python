@@ -21,7 +21,7 @@ from enum import IntEnum
 
 from hypothesis.errors import Frozen, InvalidArgument
 from hypothesis.internal.compat import hbytes, hrange, text_type, \
-    int_to_bytes, benchmark_time, unicode_safe_repr
+    int_to_bytes, benchmark_time, int_from_bytes, unicode_safe_repr
 
 
 def uniform(random, n):
@@ -80,6 +80,7 @@ class ConjectureData(object):
         self.start_time = benchmark_time()
         self.events = set()
         self.forced_indices = set()
+        self.capped_indices = {}
 
     def __assert_not_frozen(self, name):
         if self.frozen:
@@ -158,6 +159,24 @@ class ConjectureData(object):
 
     def draw_bytes(self, n):
         return self.draw_bytes_internal(n, uniform)
+
+    def draw_bits(self, n):
+        self.__assert_not_frozen('draw_bits')
+        if n == 0:
+            return 0
+        if n % 8 == 0:
+            return int_from_bytes(self.draw_bytes(n // 8))
+        n_bytes = (n // 8) + 1
+        self.__check_capacity(n_bytes)
+        result = bytearray(self._draw_bytes(self, n_bytes, uniform))
+        assert len(result) == n_bytes
+        leftover = n % 8
+        mask = (2 << (n % 8)) - 1
+        result[0] &= mask
+        self.capped_indices[self.index] = mask
+        result = hbytes(result)
+        self.__write(result)
+        return int_from_bytes(result)
 
     def write(self, string):
         self.__assert_not_frozen('write')
