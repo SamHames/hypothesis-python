@@ -732,7 +732,11 @@ class ConjectureRunner(object):
             return True
 
         for r, s in self.last_data.intervals:
-            if r >= v and s - r <= lost_data:
+            if (
+                r >= v and
+                s - r <= lost_data and
+                r < len(initial_data.buffer)
+            ):
                 try_with_deleted = bytearray(initial_attempt)
                 del try_with_deleted[r:s]
                 if self.incorporate_new_buffer(try_with_deleted):
