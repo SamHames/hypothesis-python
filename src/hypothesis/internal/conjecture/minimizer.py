@@ -111,7 +111,7 @@ class Minimizer(object):
                 continue
 
             prefix = self.current[:i]
-            original_suffix = self.current[i+1:]
+            original_suffix = self.current[i + 1:]
 
             suffixes = [original_suffix]
 

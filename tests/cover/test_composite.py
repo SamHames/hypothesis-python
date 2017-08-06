@@ -23,8 +23,8 @@ from flaky import flaky
 import hypothesis.strategies as st
 from hypothesis import find, given, assume
 from hypothesis.errors import InvalidArgument
-from hypothesis.internal.compat import hrange
 from tests.common.debug import minimal
+from hypothesis.internal.compat import hrange
 
 
 @st.composite

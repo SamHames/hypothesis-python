@@ -17,10 +17,10 @@
 
 from __future__ import division, print_function, absolute_import
 
-
-from hypothesis import find, given, settings, reject, Verbosity
-import hypothesis.strategies as st
 import pytest
+
+import hypothesis.strategies as st
+from hypothesis import Verbosity, find, given, reject, settings
 from hypothesis.errors import NoSuchExample
 
 
