@@ -55,7 +55,6 @@ class ConjectureRunner(object):
         self._test_function = test_function
         self.settings = settings or Settings()
         self.last_data = None
-        self.changed = 0
         self.shrinks = 0
         self.call_count = 0
         self.event_call_counts = Counter()
@@ -154,6 +153,23 @@ class ConjectureRunner(object):
                 else:
                     break
 
+        if (
+            data.status == Status.INTERESTING and (
+                self.last_data is None or
+                self.last_data.status < Status.INTERESTING or
+                sort_key(data.buffer) < sort_key(self.last_data.buffer)
+            )
+        ):
+            self.last_data = data
+            if (
+                self.last_data is not None and
+                self.last_data.status == Status.INTERESTING
+            ):
+                self.shrinks += 1
+                if self.shrinks >= self.settings.max_shrinks:
+                    self.exit_reason = ExitReason.max_shrinks
+                    raise RunIsComplete()
+
     def consider_new_test_data(self, data):
         # Transition rules:
         #   1. Transition cannot decrease the status
@@ -246,16 +262,7 @@ class ConjectureRunner(object):
         assert sort_key(buffer) <= sort_key(self.last_data.buffer)
         data = ConjectureData.for_buffer(buffer)
         self.test_function(data)
-        if self.consider_new_test_data(data):
-            self.shrinks += 1
-            self.last_data = data
-            if self.shrinks >= self.settings.max_shrinks:
-                self.exit_reason = ExitReason.max_shrinks
-                raise RunIsComplete()
-            self.last_data = data
-            self.changed += 1
-            return True
-        return False
+        return data is self.last_data
 
     def run(self):
         with self.settings:
@@ -777,8 +784,8 @@ class ConjectureRunner(object):
 
         change_counter = -1
 
-        while self.changed > change_counter:
-            change_counter = self.changed
+        while self.shrinks > change_counter:
+            change_counter = self.shrinks
 
             self.minimize_duplicated_blocks()
             self.minimize_individual_blocks()
