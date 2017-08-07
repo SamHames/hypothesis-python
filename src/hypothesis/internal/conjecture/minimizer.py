@@ -41,7 +41,7 @@ to do better in practice:
 
 class Minimizer(object):
 
-    def __init__(self, initial, condition, random):
+    def __init__(self, initial, condition, random, full):
         self.current = hbytes(initial)
 
         self.size = len(self.current)
@@ -49,6 +49,7 @@ class Minimizer(object):
         self.random = random
         self.changes = 0
         self.seen = set()
+        self.full = full
 
     def incorporate(self, buffer):
         """Consider this buffer as a possible replacement for the current best
@@ -169,19 +170,6 @@ class Minimizer(object):
                         return self.incorporate(attempt)
             i += 1
 
-    def check_predecessor(self):
-        predecessor = bytearray(self.current)
-        for i in hrange(len(predecessor) - 1, -1, -1):
-            if predecessor[i] == 0:
-                predecessor[i] = 255
-            else:
-                predecessor[i] -= 1
-                break
-        else:
-            assert False
-
-        return self.incorporate(hbytes(predecessor))
-
     def alphabet_minimize(self):
         def cap(m):
             if m >= max(self.current):
@@ -242,55 +230,60 @@ class Minimizer(object):
         if self.incorporate(hbytes([0] * (self.size - 1) + [1])):
             return
 
-        self.alphabet_minimize()
+        first = True
+        prev = -1
+        while (first or self.full) and (self.changes != prev):
+            first = False
+            prev = self.changes
 
-        if len(self.current) == 1:
-            return
+            self.alphabet_minimize()
 
-        # Perform a binary search to try to replace a long initial segment with
-        # zero bytes.
-        # Note that because this property isn't monotonic this will not always
-        # find the longest subsequence we can replace with zero, only some
-        # subsequence.
+            if len(self.current) == 1:
+                continue
 
-        # Replacing the first nonzero bytes with zero does *not* work
-        nonzero = len(self.current)
+            # Perform a binary search to try to replace a long initial segment
+            # with zero bytes.
+            # Note that because this property isn't monotonic this will not
+            # always find the longest subsequence we can replace with zero,
+            # only some subsequence.
 
-        # Replacing the first canzero bytes with zero *does* work.
-        canzero = 0
-        while self.current[canzero] == 0:
-            canzero += 1
+            # Replacing the first nonzero bytes with zero does *not* work
+            nonzero = len(self.current)
 
-        base = self.current
+            # Replacing the first canzero bytes with zero *does* work.
+            canzero = 0
+            while self.current[canzero] == 0:
+                canzero += 1
 
-        @binsearch(canzero, nonzero)
-        def zero_prefix(mid):
-            return self.incorporate(
-                hbytes(mid) +
-                base[mid:]
-            )
+            base = self.current
 
-        base = self.current
+            @binsearch(canzero, nonzero)
+            def zero_prefix(mid):
+                return self.incorporate(
+                    hbytes(mid) +
+                    base[mid:]
+                )
 
-        @binsearch(0, self.size)
-        def shift_right(mid):
-            if mid == 0:
-                return True
-            if mid == self.size:
-                return False
-            return self.incorporate(hbytes(mid) + base[:-mid])
+            base = self.current
 
-        self.sort_bytes()
+            @binsearch(0, self.size)
+            def shift_right(mid):
+                if mid == 0:
+                    return True
+                if mid == self.size:
+                    return False
+                return self.incorporate(hbytes(mid) + base[:-mid])
 
-        if self.check_predecessor():
+            self.sort_bytes()
+
             self.shrink_indices()
 
 
-def minimize(initial, condition, random):
+def minimize(initial, condition, random, full=False):
     """Perform a lexicographical minimization of the byte string 'initial' such
     that the predicate 'condition' returns True, and return the minimized
     string."""
-    m = Minimizer(initial, condition, random)
+    m = Minimizer(initial, condition, random, full)
     m.run()
     return m.current
 

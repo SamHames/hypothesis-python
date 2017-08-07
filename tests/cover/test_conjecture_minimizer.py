@@ -25,10 +25,11 @@ from hypothesis.internal.conjecture.minimizer import minimize
 
 def test_shrink_to_zero():
     assert minimize(
-        hbytes([255] * 8), lambda x: True, random=Random(0)) == hbytes(8)
+        hbytes([255] * 8), lambda x: True, random=Random(0), full=True
+    ) == hbytes(8)
 
 
 def test_shrink_to_smallest():
     assert minimize(
-        hbytes([255] * 8), lambda x: sum(x) > 10, random=Random(0),
+        hbytes([255] * 8), lambda x: sum(x) > 10, random=Random(0), full=True
     ) == hbytes([0] * 7 + [11])
