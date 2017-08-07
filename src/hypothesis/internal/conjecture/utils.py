@@ -163,12 +163,24 @@ def biased_coin(data, p):
             truthy = floor(256 * p)
             remainder = 256 * p - truthy
 
-            i = data.draw_bytes(1)[0]
+            if falsey + truthy == 256:
+                m, n = p.as_integer_ratio()
+                assert n & (n - 1) == 0, n  # n is a power of 2
+                assert n > m > 0
+                truthy = m
+                falsey = n - m
+                bits = bit_length(n) - 1
+                partial = False
+            else:
+                bits = 8
+                partial = True
+
+            i = data.draw_bits(bits)
 
             # We always label the region that causes us to repeat the loop as
             # 255 so that shrinking this byte never causes us to need to draw
             # more data.
-            if falsey + truthy < 256 and i == 255:
+            if partial and i == 255:
                 p = remainder
                 continue
             if falsey == 0:
