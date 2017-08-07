@@ -87,21 +87,6 @@ class Minimizer(object):
     def replace(self, i, c):
         return self.current[:i] + hbytes([c]) + self.current[i + 1:]
 
-    def rotate_suffixes(self):
-        for significant, c in enumerate(self.current):  # pragma: no branch
-            if c:
-                break
-        assert self.current[significant]
-
-        prefix = hbytes(significant)
-
-        for i in hrange(1, self.size - significant):
-            left = self.current[significant:significant + i]
-            right = self.current[significant + i:]
-            rotated = prefix + right + left
-            if rotated < self.current:
-                self.incorporate(rotated)
-
     def shrink_indices(self):
         # We take a bet that there is some monotonic lower bound such that
         # whenever current >= lower_bound the result works.
@@ -114,27 +99,21 @@ class Minimizer(object):
             prefix = self.current[:i]
             original_suffix = self.current[i + 1:]
 
-            suffixes = [original_suffix]
-
-            k = 1
-            should_continue = True
-            while should_continue:
-                h = k - 1
-                if h >= len(original_suffix):
-                    h = len(original_suffix)
-                    should_continue = False
-                suffixes.append(hbytes([255]) * h + original_suffix[h:])
-                k *= 2
-
-            for suffix in suffixes:
-                if self.incorporate(
-                    prefix + hbytes([self.current[i] - 1]) + suffix
-                ):
-                    shrinking_suffix = suffix
-                    break
+            if not original_suffix:
+                shrinking_suffix = original_suffix
             else:
-                i += 1
-                continue
+                for suffix in sorted({
+                    original_suffix, hbytes([255]) + original_suffix[1:],
+                    hbytes([255]) * len(original_suffix)
+                }):
+                    if self.incorporate(
+                        prefix + hbytes([self.current[i] - 1]) + suffix
+                    ):
+                        shrinking_suffix = suffix
+                        break
+                else:
+                    i += 1
+                    continue
 
             def suitable(c):
                 """Does the lexicographically largest value starting with our

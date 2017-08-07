@@ -741,32 +741,13 @@ class ConjectureRunner(object):
             )
             i += 1
 
-    def reorder_blocks(self):
-        self.debug('Reordering blocks')
-        block_lengths = sorted(self.last_data.block_starts, reverse=True)
-        for n in block_lengths:
-            i = 1
-            while i < len(self.last_data.block_starts.get(n, ())):
-                j = i
-                while j > 0:
-                    buf = self.last_data.buffer
-                    blocks = self.last_data.block_starts[n]
-                    a_start = blocks[j - 1]
-                    b_start = blocks[j]
-                    a = buf[a_start:a_start + n]
-                    b = buf[b_start:b_start + n]
-                    if a <= b:
-                        break
-                    swapped = (
-                        buf[:a_start] + b + buf[a_start + n:b_start] +
-                        a + buf[b_start + n:])
-                    assert len(swapped) == len(buf)
-                    assert swapped < buf
-                    if self.incorporate_new_buffer(swapped):
-                        j -= 1
-                    else:
-                        break
-                i += 1
+    def minimize_whole_buffer(self):
+        self.debug('Shrinking whole buffer')
+        minimize(
+            self.last_data.buffer,
+            self.incorporate_new_buffer,
+            random=self.random,
+        )
 
     def shrink(self):
         # We assume that if an all-zero block of bytes is an interesting
@@ -792,7 +773,7 @@ class ConjectureRunner(object):
             self.greedy_interval_deletion()
             self.minimize_duplicated_blocks()
             self.minimize_individual_blocks()
-            self.reorder_blocks()
+            self.minimize_whole_buffer()
 
         self.exit_reason = ExitReason.finished
 
