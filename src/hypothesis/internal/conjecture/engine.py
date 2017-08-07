@@ -634,11 +634,12 @@ class ConjectureRunner(object):
         # If this did not in fact cause the data size to shrink we
         # bail here because it's not worth trying to delete stuff from
         # the remainder.
-        if not lost_data:
+        if lost_data <= 0:
             return False
 
         try_with_deleted = bytearray(initial_attempt)
         del try_with_deleted[v:v + lost_data]
+        try_with_deleted.extend(hbytes(lost_data - 1))
         if self.incorporate_new_buffer(try_with_deleted):
             return True
 
@@ -650,6 +651,7 @@ class ConjectureRunner(object):
             ):
                 try_with_deleted = bytearray(initial_attempt)
                 del try_with_deleted[r:s]
+                try_with_deleted.extend(hbytes(s - r - 1))
                 if self.incorporate_new_buffer(try_with_deleted):
                     return True
         return False
@@ -787,11 +789,9 @@ class ConjectureRunner(object):
         while self.shrinks > change_counter:
             change_counter = self.shrinks
 
+            self.greedy_interval_deletion()
             self.minimize_duplicated_blocks()
             self.minimize_individual_blocks()
-            self.greedy_interval_deletion()
-            self.reorder_blocks()
-
             self.reorder_blocks()
 
         self.exit_reason = ExitReason.finished
